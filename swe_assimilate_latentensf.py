@@ -776,11 +776,11 @@ for noise in [0, 0.005, 0.01]:
                     mean_sample, log_var_sample = cnn_model.split(cnn_model.encode_sample(target_true[:, :, ::15, ::15]+torch.randn_like(target_true[:, :, ::15, ::15])*noise))
                     latent_obs.append(mean_sample.detach().cpu().numpy())
                 mean_current = ensf.assimilate_ensf(mean_current, mean_sample)
-                latent_state_means.append((mean_current/scaling).detach().cpu().numpy().mean(axis = 0))#.view(mean_current.shape[0], latent_channels, latent_width, latent_width)/scaling).detach().cpu().numpy().mean(axis = 0))
+                latent_state_means.append((mean_current).detach().cpu().numpy().mean(axis = 0))#.view(mean_current.shape[0], latent_channels, latent_width, latent_width)/scaling).detach().cpu().numpy().mean(axis = 0))
                 # print(torch.mean(torch.abs(mean_current)))
                 # mean_current = mean  + torch.randn_like(mean)*obs_sigma
                 with torch.no_grad():
-                    latent = cnn_model.decode(mean_current/scaling).detach().cpu().numpy()#.view(mean_current.shape[0], latent_channels, latent_width, latent_width)/scaling).detach().cpu().numpy()
+                    latent = cnn_model.decode(mean_current).detach().cpu().numpy()#.view(mean_current.shape[0], latent_channels, latent_width, latent_width)/scaling).detach().cpu().numpy()
                 eta_n = latent[:, 2, :, :]
                 u_n = latent[:, 0, :, :]
                 v_n = latent[:, 1, :, :]
@@ -1149,7 +1149,7 @@ for noise in [0, 0.005, 0.01]:
                     score_x = xt_tensor.grad
                     tau = ensf.g_tau(t)
                     return tau*score_x
-                eta_n = ensf.assimilate_ensf_define_likelihood(torch.Tensor(eta_n).to(device), score_likelihood).detach().cpu().numpy()/scaling
+                eta_n = ensf.assimilate_ensf_define_likelihood(torch.Tensor(eta_n).to(device), score_likelihood).detach().cpu().numpy()
 
                 obs = torch.Tensor(u_list[time_step // anim_interval - 1]*scaling+ obs_sigma * rnd.randn(N_x, N_y)).to(device)[::15, ::15]
                 def score_likelihood(xt, t):
@@ -1164,7 +1164,7 @@ for noise in [0, 0.005, 0.01]:
                     score_x = xt_tensor.grad
                     tau = ensf.g_tau(t)
                     return tau*score_x
-                u_n = ensf.assimilate_ensf_define_likelihood(torch.Tensor(u_n).to(device), score_likelihood).detach().cpu().numpy()/scaling
+                u_n = ensf.assimilate_ensf_define_likelihood(torch.Tensor(u_n).to(device), score_likelihood).detach().cpu().numpy()
 
                 obs = torch.Tensor(v_list[time_step // anim_interval - 1]*scaling+ obs_sigma *  rnd.randn(N_x, N_y)).to(device)[::15, ::15]
                 def score_likelihood(xt, t):
@@ -1179,7 +1179,7 @@ for noise in [0, 0.005, 0.01]:
                     score_x = xt_tensor.grad
                     tau = ensf.g_tau(t)
                     return tau*score_x
-                v_n = ensf.assimilate_ensf_define_likelihood(torch.Tensor(v_n).to(device), score_likelihood).detach().cpu().numpy()/scaling
+                v_n = ensf.assimilate_ensf_define_likelihood(torch.Tensor(v_n).to(device), score_likelihood).detach().cpu().numpy()
                 times.append(time.time() - current_time)
             # Samples for Hovmuller diagram and spectrum every sample_interval time step.
             if (time_step % sample_interval == 0):

@@ -103,7 +103,7 @@ class EnSF:
         else:
             return xt
     def assimilate_ensf_define_likelihood(self, ensemble_states, score_likelihood):
-        return self.reverse_SDE(x0=ensemble_states*self.scaling, score_likelihood=score_likelihood, time_steps=self.euler_steps)
+        return self.reverse_SDE(x0=ensemble_states*self.scaling, score_likelihood=score_likelihood, time_steps=self.euler_steps)/self.scaling
     
     def assimilate_ensf(self, ensemble_states, observations):
         obs = observations.view(-1)*self.scaling + torch.randn_like(observations.view(-1))*self.obs_sigma
@@ -115,4 +115,4 @@ class EnSF:
             tau = self.g_tau(t)
             return tau*score_x
         
-        return self.reverse_SDE(x0=ensemble_states.view(ensemble_states.shape[0], -1)*self.scaling, score_likelihood=score_likelihood, time_steps=self.euler_steps)
+        return self.reverse_SDE(x0=ensemble_states.view(ensemble_states.shape[0], -1)*self.scaling, score_likelihood=score_likelihood, time_steps=self.euler_steps)/self.scaling
