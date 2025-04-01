@@ -5,7 +5,7 @@ import deepxde as dde
 import deepxde.nn.activations as activations
 import deepxde.nn.initializers as initializers
 
-from src.model import LDNN
+from ldnet.model import LDNN
 
 parallel = 40
 

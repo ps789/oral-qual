@@ -328,7 +328,7 @@ class ResFourierLDNN(LDNN):
         # observations have shape Nt, Nx, dimx
         # u has shape (2)
         u = data["u"]
-        u = u + torch.randn_like(u)*2
+        u = u + torch.randn_like(u)*0.05
         x = data["x"]
         dt = data["dt"]
         x_rec = []
@@ -408,7 +408,7 @@ class ResFourierLDNN(LDNN):
                 for var in self.dyn.parameters():
                     var.grad = None
                 u = u_ti
-                print(data["u"] - u)
+                # print(data["u"] - u)
                 self.state = state.detach()
                 self.state_history.append(self.state)
             #end here
