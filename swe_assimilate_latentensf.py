@@ -30,6 +30,7 @@ from swe_utils import viz_tools
 import torch
 import torch.nn as nn
 from assimilation.LETKF import *
+from assimilation.EnSF import *
 torch.set_default_dtype(torch.float32) # half precision
 device = 'cuda:3'
 from ldm_ae.ae import KLModel, KLModel_Linear
@@ -415,7 +416,7 @@ for noise in [0, 0.005, 0.01]:
 
 
 
-            # np.save(f"./results_rebuttal/perturbed_rmse_{iter_num}.npy", np.array(rmse_list_perturbed), allow_pickle = True)
+            # np.save(f"./results/perturbed_rmse_{iter_num}.npy", np.array(rmse_list_perturbed), allow_pickle = True)
         # eta_anim = viz_tools.eta_animation_perturbed(X, Y, eta_list, eta_list_2, anim_interval*dt, "perturbed")
         # ======================LETKF=====================================================================================
         ensemble_size = 20
@@ -511,7 +512,7 @@ for noise in [0, 0.005, 0.01]:
         # ==================================================================================
         # ========================= Main time loop for simulation ==========================
         # ==================================================================================
-        while (time_step < 0):
+        while (time_step < max_time_step):
             # ------------ Computing values for u and v at next time step --------------
             u_np1[:, :-1, :] = u_n[:, :-1, :] - g*dt/dx*(eta_n[:, 1:, :] - eta_n[:, :-1, :])
             v_np1[:, :, :-1] = v_n[:, :, :-1] - g*dt/dy*(eta_n[:, :, 1:] - eta_n[:, :, :-1])
@@ -611,7 +612,7 @@ for noise in [0, 0.005, 0.01]:
                 rmse_list_cnn.append(rmse)
 
         letkf_time = np.array(times)
-        # np.save(f"./results_rebuttal/letkf_rmse_100dim_{iter_num}_{noise}.npy", np.array(rmse_list_cnn), allow_pickle = True)
+        # np.save(f"./results/letkf_rmse_100dim_{iter_num}_{noise}.npy", np.array(rmse_list_cnn), allow_pickle = True)
 
 
         # Don't use numpy's mean, cov, but rather a `for` loop.
@@ -631,101 +632,13 @@ for noise in [0, 0.005, 0.01]:
 
 
         # ======================EnSF=====================================================================================
+        
         scaling = 20
         ensemble_size = 20
         obs_sigma =  0.1
         eps_alpha = 0.05
-        # compact version
-        def cond_alpha(t):
-            # conditional information
-            # alpha_t(0) = 1
-            # alpha_t(1) = esp_alpha \approx 0
-            return 1 - (1-eps_alpha)*t
-
-        def g_tau(t):
-            return 1-t
-
-        def cond_sigma_sq(t):
-            # conditional sigma^2
-            # sigma2_t(0) = 0
-            # sigma2_t(1) = 1
-            # sigma(t) = t
-            return t
-
-        # drift function of forward SDE
-        def f_func(t):
-            # f=d_(log_alpha)/dt
-            alpha_t = cond_alpha(t)
-            f_t = -(1-eps_alpha) / alpha_t
-            return f_t
-
-
-        def g_sq(t):
-            # g = d(sigma_t^2)/dt -2f sigma_t^2
-            d_sigma_sq_dt = 1
-            g2 = d_sigma_sq_dt - 2*f_func(t)*cond_sigma_sq(t)
-            return g2
-
-        def g_func(t):
-            return np.sqrt(g_sq(t))
-
-
-        # generate sample with reverse SDE
-        def reverse_SDE(x0, score_likelihood=None, time_steps=100,
-                        drift_fun=f_func, diffuse_fun=g_func, alpha_fun=cond_alpha, sigma2_fun=cond_sigma_sq,  save_path=False):
-            # x_T: sample from standard Gaussian
-            # x_0: target distribution to sample from
-
-            # reverse SDE sampling process
-            # N1 = x_T.shape[0]
-            # N2 = x0.shape[0]
-            # d = x_T.shape[1]
-
-            # Generate the time mesh
-            dt = 1.0/time_steps
-
-            # Initialization
-            xt = torch.randn(ensemble_size,x0.shape[1], device=device)
-            t = 1.0
-
-            # define storage
-            if save_path:
-                path_all = [xt]
-                t_vec = [t]
-
-            # forward Euler sampling
-            for i in range(time_steps):
-                # prior score evaluation
-                alpha_t = alpha_fun(t)
-                sigma2_t = sigma2_fun(t)
-
-
-                # Evaluate the diffusion term
-                diffuse = diffuse_fun(t)
-
-                # Evaluate the drift term
-                # drift = drift_fun(t)*xt - diffuse**2 * score_eval
-
-                # Update
-                if score_likelihood is not None:
-                    xt += - dt*( drift_fun(t)*xt + diffuse**2 * ( (xt - alpha_t*x0)/sigma2_t) - diffuse**2 * score_likelihood(xt, t) ) \
-                        + np.sqrt(dt)*diffuse*torch.randn_like(xt)
-                else:
-                    xt += - dt*( drift_fun(t)*xt + diffuse**2 * ( (xt - alpha_t*x0)/sigma2_t) ) + np.sqrt(dt)*diffuse*torch.randn_like(xt)
-
-                # Store the state in the path
-                if save_path:
-                    path_all.append(xt)
-                    t_vec.append(t)
-
-                # update time
-                t = t - dt
-
-            if save_path:
-                return path_all, t_vec
-            else:
-                return xt
-
+        ensf = EnSF(ensemble_size, scaling, obs_sigma, eps_alpha, 100, device)
+        
         # Define source array if source is enabled.
         if (use_source):
             sigma = np.zeros((N_x, N_y))
@@ -852,7 +765,6 @@ for noise in [0, 0.005, 0.01]:
             v_n = np.copy(v_np1)        # Update v for next iteration
             eta_n = np.copy(eta_np1)    # Update eta for next iteration
             time_step += 1
-            euler_steps = 100
             # define likelihood score
             if (time_step % anim_interval == 0):
                 current_time = time.time()
@@ -863,15 +775,7 @@ for noise in [0, 0.005, 0.01]:
                     mean, log_var = cnn_model.split(cnn_model.encode(target_true))
                     mean_sample, log_var_sample = cnn_model.split(cnn_model.encode_sample(target_true[:, :, ::15, ::15]+torch.randn_like(target_true[:, :, ::15, ::15])*noise))
                     latent_obs.append(mean_sample.detach().cpu().numpy())
-                    obs = mean_sample.view(-1)*scaling + torch.randn_like(mean.view(-1))*obs_sigma
-                def score_likelihood(xt, t):
-                    # obs: (d)
-                    # xt: (ensemble, d)
-                    # the line below is analytical ∇z log P(Yt+1|z)
-                    score_x = -(xt - obs)/obs_sigma**2
-                    tau = g_tau(t)
-                    return tau*score_x
-                mean_current = reverse_SDE(x0=mean_current.view(mean_current.shape[0], -1)*scaling, score_likelihood=score_likelihood, time_steps=euler_steps)
+                mean_current = ensf.assimilate_ensf(mean_current, mean_sample)
                 latent_state_means.append((mean_current/scaling).detach().cpu().numpy().mean(axis = 0))#.view(mean_current.shape[0], latent_channels, latent_width, latent_width)/scaling).detach().cpu().numpy().mean(axis = 0))
                 # print(torch.mean(torch.abs(mean_current)))
                 # mean_current = mean  + torch.randn_like(mean)*obs_sigma
@@ -881,23 +785,6 @@ for noise in [0, 0.005, 0.01]:
                 u_n = latent[:, 0, :, :]
                 v_n = latent[:, 1, :, :]
                 times.append(time.time() - current_time)
-                # with torch.no_grad():
-                #     target_true = torch.Tensor(np.stack([u_list[time_step // anim_interval - 1], v_list[time_step // anim_interval - 1], eta_list[time_step // anim_interval - 1]], axis = 0)).unsqueeze(0).to(device)
-                #     target = torch.Tensor(np.stack([u_n, v_n, eta_n], axis = 1)).to(device)
-                #     obs = torch.atan(target_true.view(-1)*scaling)+ torch.randn_like(target_true.view(-1))*obs_sigma
-                # def score_likelihood(xt, t):
-                #     # obs: (d)
-                #     # xt: (ensemble, d)
-                #     # the line below is analytical ∇z log P(Yt+1|z)
-                #     score_x = -(torch.atan(xt) - obs)/obs_sigma**2 * (1./(1. + xt**2))
-                #     tau = g_tau(t)
-                #     return tau*score_x
-                # mean_current = reverse_SDE(x0=target.view(target.shape[0], -1)*scaling, score_likelihood=score_likelihood, time_steps=euler_steps)
-                # with torch.no_grad():
-                #     mean_current = (mean_current.view(mean_current.shape[0], 3, 150, 150)/scaling).detach().cpu().numpy()
-                # eta_n = mean_current[:, 2, :, :]
-                # u_n = mean_current[:, 0, :, :]
-                # v_n = mean_current[:, 1, :, :]
             # Samples for Hovmuller diagram and spectrum every sample_interval time step.
             if (time_step % sample_interval == 0):
                 hm_sample.append(np.mean(eta_n, axis = 0)[:, int(N_y/2)])              # Sample middle of domain for Hovmuller
@@ -919,9 +806,9 @@ for noise in [0, 0.005, 0.01]:
                 print(f"RMSE Relative:  {rmse}" )
                 rmse_list_cnn_ensf.append(rmse)
         ensf_time = np.array(times)
-        # np.save("./results_rebuttal/latent_obs.npy", np.stack(latent_obs, axis = 0), allow_pickle = True)
-        # np.save("./results_rebuttal/latent_state_means.npy", np.stack(latent_state_means, axis = 0), allow_pickle = True)
-        np.save(f"./results_rebuttal/ensf_rmse_20dim_linear_{iter_num}_{noise}.npy", np.array(rmse_list_cnn_ensf), allow_pickle = True)
+        # np.save("./results/latent_obs.npy", np.stack(latent_obs, axis = 0), allow_pickle = True)
+        # np.save("./results/latent_state_means.npy", np.stack(latent_state_means, axis = 0), allow_pickle = True)
+        np.save(f"./results/ensf_rmse_20dim_linear_{iter_num}_{noise}.npy", np.array(rmse_list_cnn_ensf), allow_pickle = True)
 
         # # ======================EnKF=====================================================================================
         ensemble_size = 20
@@ -937,8 +824,6 @@ for noise in [0, 0.005, 0.01]:
         xDim = N_x * N_y
         latent_dim = latent_width*latent_width*latent_channels
         obs_sigma =  0.1
-        R12 = obs_sigma*np.eye((latent_dim))
-        R = R12 @ R12.T
         def Obs(E):
             return E
 
@@ -1025,7 +910,7 @@ for noise in [0, 0.005, 0.01]:
         # ==================================================================================
         # ========================= Main time loop for simulation ==========================
         # ==================================================================================
-        while (time_step < 0):
+        while (time_step < max_time_step):
             # ------------ Computing values for u and v at next time step --------------
             u_np1[:, :-1, :] = u_n[:, :-1, :] - g*dt/dx*(eta_n[:, 1:, :] - eta_n[:, :-1, :])
             v_np1[:, :, :-1] = v_n[:, :, :-1] - g*dt/dy*(eta_n[:, :, 1:] - eta_n[:, :, :-1])
@@ -1121,7 +1006,7 @@ for noise in [0, 0.005, 0.01]:
                 rmse = np.sqrt(np.mean((np.mean(eta_n, axis = 0) - eta_list[time_step // anim_interval - 1])**2))/np.sqrt(np.mean((eta_list[time_step // anim_interval - 1])**2))
                 print(f"RMSE Relative:  {rmse}" )
                 rmse_list_cnn.append(rmse)
-        # np.save(f"./results_rebuttal/enkf_rmse_100dim_{iter_num}_{noise}.npy", np.array(rmse_list_cnn), allow_pickle = True)
+        # np.save(f"./results/enkf_rmse_100dim_{iter_num}_{noise}.npy", np.array(rmse_list_cnn), allow_pickle = True)
 
 
         # enkf_time = np.array(times)
@@ -1130,106 +1015,8 @@ for noise in [0, 0.005, 0.01]:
         eps_alpha = 0.05
         R12 = obs_sigma*np.eye(xDim)
         R = R12 @ R12.T
-        def Obs(E):
-            return E
-        # compact version
-        def cond_alpha(t):
-            # conditional information
-            # alpha_t(0) = 1
-            # alpha_t(1) = esp_alpha \approx 0
-            return 1 - (1-eps_alpha)*t
-
-
-        def cond_sigma_sq(t):
-            # conditional sigma^2
-            # sigma2_t(0) = 0
-            # sigma2_t(1) = 1
-            # sigma(t) = t
-            return t    
-        # damping function(tau(0) = 1;  tau(1) = 0;)
-        def g_tau(t):
-            return 1-t
-        # drift function of forward SDE
-        def f_func(t):
-            # f=d_(log_alpha)/dt
-            alpha_t = cond_alpha(t)
-            f_t = -(1-eps_alpha) / alpha_t
-            return f_t
-
-
-        def g_sq(t):
-            # g = d(sigma_t^2)/dt -2f sigma_t^2
-            d_sigma_sq_dt = 1
-            g2 = d_sigma_sq_dt - 2*f_func(t)*cond_sigma_sq(t)
-            return g2
-
-        def g_func(t):
-            return np.sqrt(g_sq(t))
-
-        # generate sample with reverse SDE
-        def reverse_SDE(x0, score_likelihood=None, time_steps=100,
-                        drift_fun=f_func, diffuse_fun=g_func, alpha_fun=cond_alpha, sigma2_fun=cond_sigma_sq,  save_path=False):
-            # x_T: sample from standard Gaussian
-            # x_0: target distribution to sample from
-
-            # reverse SDE sampling process
-            # N1 = x_T.shape[0]
-            # N2 = x0.shape[0]
-            # d = x_T.shape[1]
-            x0 = torch.Tensor(x0).to(device)
-            # Generate the time mesh
-            dt = 1.0/time_steps
-
-            # Initialization
-            xt = torch.randn(ensemble_size, N_x, N_y, device=device)
-            t = 1.0
-
-            # define storage
-            if save_path:
-                path_all = [xt]
-                t_vec = [t]
-
-            # forward Euler sampling
-            for i in range(time_steps):
-                # prior score evaluation
-                alpha_t = alpha_fun(t)
-                sigma2_t = sigma2_fun(t)
-
-
-                # Evaluate the diffusion term
-                diffuse = diffuse_fun(t)
-
-                # Evaluate the drift term
-                # drift = drift_fun(t)*xt - diffuse**2 * score_eval
-
-                # Update
-                if score_likelihood is not None:
-                    xt += - dt*( drift_fun(t)*xt + diffuse**2 * ( (xt - alpha_t*x0)/sigma2_t) - diffuse**2 * score_likelihood(xt, t) ) \
-                          + np.sqrt(dt)*diffuse*torch.randn_like(xt)
-                else:
-                    xt += - dt*( drift_fun(t)*xt + diffuse**2 * ( (xt - alpha_t*x0)/sigma2_t) ) + np.sqrt(dt)*diffuse*torch.randn_like(xt)
-
-                # Store the state in the path
-                if save_path:
-                    path_all.append(xt)
-                    t_vec.append(t)
-
-                # update time
-                t = t - dt
-
-            if save_path:
-                return path_all, t_vec
-            else:
-                return xt
-        # Define source array if source is enabled.
-        if (use_source):
-            sigma = np.zeros((N_x, N_y))
-            sigma = 0.0001*np.exp(-((X-L_x/2)**2/(2*(1E+5)**2) + (Y-L_y/2)**2/(2*(1E+5)**2)))
-            
-        # Define source array if source is enabled.
-        if (use_sink is True):
-            w = np.ones((N_x, N_y))*sigma.sum()/(N_x*N_y)
-
+        
+        ensf = EnSF(ensemble_size, scaling, obs_sigma, eps_alpha, 100, device)
         # Write all parameters out to file.
         with open("param_output.txt", "w") as output_file:
             output_file.write(param_string)
@@ -1283,7 +1070,7 @@ for noise in [0, 0.005, 0.01]:
         # ==================================================================================
         # ========================= Main time loop for simulation ==========================
         # ==================================================================================
-        while (time_step < 0):
+        while (time_step < max_time_step):
             # ------------ Computing values for u and v at next time step --------------
             u_np1[:, :-1, :] = u_n[:, :-1, :] - g*dt/dx*(eta_n[:, 1:, :] - eta_n[:, :-1, :])
             v_np1[:, :, :-1] = v_n[:, :, :-1] - g*dt/dy*(eta_n[:, :, 1:] - eta_n[:, :, :-1])
@@ -1360,9 +1147,9 @@ for noise in [0, 0.005, 0.01]:
                     logprob = -torch.sum(torch.square(xt_tensor[:, ::15, ::15] - obs)/obs_sigma**2/2)
                     logprob.backward()
                     score_x = xt_tensor.grad
-                    tau = g_tau(t)
+                    tau = ensf.g_tau(t)
                     return tau*score_x
-                eta_n = reverse_SDE(x0=torch.Tensor(eta_n)*scaling, score_likelihood=score_likelihood, time_steps=euler_steps).detach().cpu().numpy()/scaling
+                eta_n = ensf.assimilate_ensf_define_likelihood(torch.Tensor(eta_n).to(device), score_likelihood).detach().cpu().numpy()/scaling
 
                 obs = torch.Tensor(u_list[time_step // anim_interval - 1]*scaling+ obs_sigma * rnd.randn(N_x, N_y)).to(device)[::15, ::15]
                 def score_likelihood(xt, t):
@@ -1375,9 +1162,9 @@ for noise in [0, 0.005, 0.01]:
                     logprob = -torch.sum(torch.square(xt_tensor[:, ::15, ::15] - obs)/obs_sigma**2/2)
                     logprob.backward()
                     score_x = xt_tensor.grad
-                    tau = g_tau(t)
+                    tau = ensf.g_tau(t)
                     return tau*score_x
-                u_n = reverse_SDE(x0=torch.Tensor(u_n)*scaling, score_likelihood=score_likelihood, time_steps=euler_steps).detach().cpu().numpy()/scaling
+                u_n = ensf.assimilate_ensf_define_likelihood(torch.Tensor(u_n).to(device), score_likelihood).detach().cpu().numpy()/scaling
 
                 obs = torch.Tensor(v_list[time_step // anim_interval - 1]*scaling+ obs_sigma *  rnd.randn(N_x, N_y)).to(device)[::15, ::15]
                 def score_likelihood(xt, t):
@@ -1390,9 +1177,9 @@ for noise in [0, 0.005, 0.01]:
                     logprob = -torch.sum(torch.square(xt_tensor[:, ::15, ::15] - obs)/obs_sigma**2/2)
                     logprob.backward()
                     score_x = xt_tensor.grad
-                    tau = g_tau(t)
+                    tau = ensf.g_tau(t)
                     return tau*score_x
-                v_n = reverse_SDE(x0=torch.Tensor(v_n)*scaling, score_likelihood=score_likelihood, time_steps=euler_steps).detach().cpu().numpy()/scaling
+                v_n = ensf.assimilate_ensf_define_likelihood(torch.Tensor(v_n).to(device), score_likelihood).detach().cpu().numpy()/scaling
                 times.append(time.time() - current_time)
             # Samples for Hovmuller diagram and spectrum every sample_interval time step.
             if (time_step % sample_interval == 0):
